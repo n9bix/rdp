@@ -10,38 +10,44 @@ jobs:
     steps:
     # ------------------------------------------------------------
     # Decide RDP SLOT (1–5) + Cleanup Oldest if needed
-    # ------------------------------------------------------------
-    - name: Allocate RDP Slot
-      shell: pwsh
-      run: |
-        $headers = @{
-          Authorization = "Bearer ${{ secrets.GH_TRIGGER_TOKEN }}"
-          Accept        = "application/vnd.github+json"
-        }
+    # ------------------------------------------------------------ cancel-timeout-minutes: 
+  - name: Allocate RDP Slot
+  shell: pwsh
+  run: |
+    $headers = @{
+      Authorization = "Bearer ${{ secrets.GH_TRIGGER_TOKEN }}"
+      Accept        = "application/vnd.github+json"
+    }
 
-        $repo = "${{ github.repository }}"
-        $wf   = "NOBIXRDP.yml"
+    $repo = "${{ github.repository }}"
 
-        $runs = Invoke-RestMethod `
-          -Headers $headers `
-          -Uri "https://api.github.com/repos/$repo/actions/workflows/$wf/runs?status=in_progress"
+    # Get ALL running workflows in repo
+    $runs = Invoke-RestMethod `
+      -Headers $headers `
+      -Uri "https://api.github.com/repos/$repo/actions/runs?status=in_progress"
 
-        if ($runs.total_count -ge 5) {
-          $oldest = $runs.workflow_runs | Sort-Object created_at | Select-Object -First 1
+    # Only count NOBIXRDP runs
+    $active = $runs.workflow_runs | Where-Object {
+      $_.name -eq "NOBIXRDP"
+    }
 
-          Invoke-RestMethod `
-            -Method POST `
-            -Headers $headers `
-            -Uri "https://api.github.com/repos/$repo/actions/runs/$($oldest.id)/cancel"
+    if ($active.Count -ge 5) {
+      $oldest = $active | Sort-Object created_at | Select-Object -First 1
 
-          $bot="${{ secrets.TG_BOT_TOKEN }}"
-          $chat="${{ secrets.TG_CHAT_ID }}"
-          $msg="🧹 OLD RDP CANCELLED%0A🆔 Run ID: $($oldest.id)"
-          Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
-        }
+      Invoke-RestMethod `
+        -Method POST `
+        -Headers $headers `
+        -Uri "https://api.github.com/repos/$repo/actions/runs/$($oldest.id)/cancel"
 
-        $slot = ($runs.total_count % 5) + 1
-        echo "RDP_SLOT=RDP-$slot" >> $env:GITHUB_ENV
+      $bot="${{ secrets.TG_BOT_TOKEN }}"
+      $chat="${{ secrets.TG_CHAT_ID }}"
+      $msg="🧹 **OLD RDP CANCELLED**%0A🔢 Run ID: $($oldest.id)"
+      Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
+    }
+
+    $slot = ($active.Count % 5) + 1
+    echo "RDP_SLOT=RDP-$slot" >> $env:GITHUB_ENV
+
 
     # ------------------------------------------------------------
     # Enable RDP
