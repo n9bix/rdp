@@ -9,48 +9,50 @@ jobs:
 
     steps:
     # ------------------------------------------------------------
-    # Decide RDP SLOT (1–5) + Cleanup Oldest if needed
-    # ------------------------------------------------------------ cancel-timeout-minutes: 
-  - name: Allocate RDP Slot
-  shell: pwsh
-  run: |
-    $headers = @{
-      Authorization = "Bearer ${{ secrets.GH_TRIGGER_TOKEN }}"
-      Accept        = "application/vnd.github+json"
-    }
+    # Allocate RDP Slot + Enforce Max 5 RDP
+    # ------------------------------------------------------------
+    - name: Allocate RDP Slot
+      shell: pwsh
+      run: |
+        $headers = @{
+          Authorization = "Bearer ${{ secrets.GH_TRIGGER_TOKEN }}"
+          Accept        = "application/vnd.github+json"
+        }
 
-    $repo = "${{ github.repository }}"
+        $repo = "${{ github.repository }}"
 
-    # Get ALL running workflows in repo
-    $runs = Invoke-RestMethod `
-      -Headers $headers `
-      -Uri "https://api.github.com/repos/$repo/actions/runs?status=in_progress"
+        # Get all in-progress runs
+        $runs = Invoke-RestMethod `
+          -Headers $headers `
+          -Uri "https://api.github.com/repos/$repo/actions/runs?status=in_progress"
 
-    # Only count NOBIXRDP runs
-    $active = $runs.workflow_runs | Where-Object {
-      $_.name -eq "NOBIXRDP"
-    }
+        # Filter only NOBIXRDP workflow
+        $active = $runs.workflow_runs | Where-Object {
+          $_.name -eq "NOBIXRDP"
+        }
 
-    if ($active.Count -ge 5) {
-      $oldest = $active | Sort-Object created_at | Select-Object -First 1
+        if ($active.Count -ge 5) {
+          $oldest = $active | Sort-Object created_at | Select-Object -First 1
 
-      Invoke-RestMethod `
-        -Method POST `
-        -Headers $headers `
-        -Uri "https://api.github.com/repos/$repo/actions/runs/$($oldest.id)/cancel"
+          # Cancel oldest
+          Invoke-RestMethod `
+            -Method POST `
+            -Headers $headers `
+            -Uri "https://api.github.com/repos/$repo/actions/runs/$($oldest.id)/cancel"
 
-      $bot="${{ secrets.TG_BOT_TOKEN }}"
-      $chat="${{ secrets.TG_CHAT_ID }}"
-      $msg="🧹 **OLD RDP CANCELLED**%0A🔢 Run ID: $($oldest.id)"
-      Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
-    }
+          # Telegram alert
+          $bot="${{ secrets.TG_BOT_TOKEN }}"
+          $chat="${{ secrets.TG_CHAT_ID }}"
+          $msg="🧹 **OLD RDP CANCELLED**%0A🔢 Run ID: $($oldest.id)"
+          Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
+        }
 
-    $slot = ($active.Count % 5) + 1
-    echo "RDP_SLOT=RDP-$slot" >> $env:GITHUB_ENV
-
+        # Assign new slot number
+        $slot = ($active.Count % 5) + 1
+        echo "RDP_SLOT=RDP-$slot" >> $env:GITHUB_ENV
 
     # ------------------------------------------------------------
-    # Enable RDP
+    # Enable RDP + Firewall
     # ------------------------------------------------------------
     - name: Enable RDP
       run: |
@@ -59,7 +61,7 @@ jobs:
         Restart-Service TermService -Force
 
     # ------------------------------------------------------------
-    # Create RDP User (FIXED PASSWORD)
+    # Create User (Fixed Password)
     # ------------------------------------------------------------
     - name: Create User
       run: |
@@ -77,7 +79,7 @@ jobs:
         echo "RDP_USER=NOBIXRDP" >> $env:GITHUB_ENV
 
     # ------------------------------------------------------------
-    # Install + Start Tailscale
+    # Install + Connect Tailscale
     # ------------------------------------------------------------
     - name: Tailscale
       run: |
@@ -94,7 +96,7 @@ jobs:
         echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
 
     # ------------------------------------------------------------
-    # Telegram: NEW RDP DETAILS
+    # Telegram Alert: NEW RDP
     # ------------------------------------------------------------
     - name: Telegram New RDP
       run: |
@@ -104,17 +106,21 @@ jobs:
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
 
     # ------------------------------------------------------------
-    # EXPIRY COUNTDOWN + ALERTS
+    # RDP Lifetime + Expiry Alert
     # ------------------------------------------------------------
     - name: RDP Lifetime
       run: |
         $bot="${{ secrets.TG_BOT_TOKEN }}"
         $chat="${{ secrets.TG_CHAT_ID }}"
 
-        Start-Sleep 20700   # 5h 45m
+        # 5h45m sleep
+        Start-Sleep 20700
 
+        # 15 min warning
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=⏰ WARNING%0A$env:RDP_SLOT will expire in 15 minutes"
 
-        Start-Sleep 900     # 15m
+        # final 15 min
+        Start-Sleep 900
 
+        # Expired alert
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=🔴 RDP EXPIRED%0A$env:RDP_SLOT is now offline"
