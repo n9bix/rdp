@@ -8,6 +8,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
+
     # ------------------------------------------------------------
     # Allocate RDP Slot + Enforce Max 5 RDP
     # ------------------------------------------------------------
@@ -106,21 +107,41 @@ jobs:
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
 
     # ------------------------------------------------------------
-    # RDP Lifetime + Expiry Alert
+    # RDP Lifetime + Expiry Alert + Auto Renew
     # ------------------------------------------------------------
-    - name: RDP Lifetime
+    - name: RDP Lifetime & Auto-Renew
+      shell: pwsh
       run: |
         $bot="${{ secrets.TG_BOT_TOKEN }}"
         $chat="${{ secrets.TG_CHAT_ID }}"
+        $repo="${{ github.repository }}"
+        $wf="NOBIXRDP.yml"
+        $token="${{ secrets.GH_TRIGGER_TOKEN }}"
 
-        # 5h45m sleep
+        # Wait 5h45m
         Start-Sleep 20700
 
         # 15 min warning
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=⏰ WARNING%0A$env:RDP_SLOT will expire in 15 minutes"
 
-        # final 15 min
+        # Wait final 15 min
         Start-Sleep 900
 
         # Expired alert
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=🔴 RDP EXPIRED%0A$env:RDP_SLOT is now offline"
+
+        # ------------------------------------------------------
+        # Auto-Renew: Trigger new workflow_dispatch
+        # ------------------------------------------------------
+        $body = @{ 
+          ref = "${{ github.ref }}" 
+        } | ConvertTo-Json
+
+        Invoke-RestMethod `
+          -Method POST `
+          -Uri "https://api.github.com/repos/$repo/actions/workflows/$wf/dispatches" `
+          -Headers @{
+            Authorization = "Bearer $token"
+            Accept = "application/vnd.github+json"
+          } `
+          -Body $body
