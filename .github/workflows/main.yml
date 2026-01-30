@@ -103,7 +103,7 @@ jobs:
       run: |
         $bot="${{ secrets.TG_BOT_TOKEN }}"
         $chat="${{ secrets.TG_CHAT_ID }}"
-        $msg="🟢 **NEW RDP READY**%0A%0A🔢 $env:RDP_SLOT%0A🖥 IP: $env:TAILSCALE_IP%0A👤 User: NOBIXRDP%0A🔐 Pass: FIXED%0A⏳ Expiry: 6 HOURS"
+        $msg="🟢 **NEW RDP READY**%0A%0A🔢 $env:RDP_SLOT%0A🖥 IP: $env:TAILSCALE_IP%0A👤 User: ./NOBIXRDP%0A🔐 Pass: FIXED%0A⏳"
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
 
     # ------------------------------------------------------------
