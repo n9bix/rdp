@@ -2,6 +2,11 @@ name: NOBIXRDP
 
 on:
   workflow_dispatch:
+    inputs:
+      replace_slot:
+        description: "Slot to replace (RDP-1 to RDP-5)"
+        required: false
+        default: ""
 
 jobs:
   rdp:
@@ -10,11 +15,19 @@ jobs:
     steps:
 
     # ------------------------------------------------------------
-    # Allocate RDP Slot + Enforce Max 5 RDP
+    # Allocate Slot (Replacement-aware)
     # ------------------------------------------------------------
     - name: Allocate RDP Slot
       shell: pwsh
       run: |
+        $incoming = "${{ github.event.inputs.replace_slot }}"
+
+        if ($incoming -ne "") {
+          echo "RDP_SLOT=$incoming" >> $env:GITHUB_ENV
+          echo "REPLACED=$incoming" >> $env:GITHUB_ENV
+          exit 0
+        }
+
         $headers = @{
           Authorization = "Bearer ${{ secrets.GH_TRIGGER_TOKEN }}"
           Accept        = "application/vnd.github+json"
@@ -22,42 +35,29 @@ jobs:
 
         $repo = "${{ github.repository }}"
 
-        # Get all in-progress runs
         $runs = Invoke-RestMethod `
           -Headers $headers `
           -Uri "https://api.github.com/repos/$repo/actions/runs?status=in_progress"
 
-        # Filter only NOBIXRDP workflow
-        $active = $runs.workflow_runs | Where-Object {
-          $_.name -eq "NOBIXRDP"
-        }
+        $active = $runs.workflow_runs | Where-Object { $_.name -eq "NOBIXRDP" }
 
         if ($active.Count -ge 5) {
           $oldest = $active | Sort-Object created_at | Select-Object -First 1
-
-          # Cancel oldest
-          Invoke-RestMethod `
-            -Method POST `
-            -Headers $headers `
+          Invoke-RestMethod -Method POST -Headers $headers `
             -Uri "https://api.github.com/repos/$repo/actions/runs/$($oldest.id)/cancel"
-
-          # Telegram alert
-          $bot="${{ secrets.TG_BOT_TOKEN }}"
-          $chat="${{ secrets.TG_CHAT_ID }}"
-          $msg="🧹 **OLD RDP CANCELLED**%0A🔢 Run ID: $($oldest.id)"
-          Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
         }
 
-        # Assign new slot number
         $slot = ($active.Count % 5) + 1
         echo "RDP_SLOT=RDP-$slot" >> $env:GITHUB_ENV
 
     # ------------------------------------------------------------
-    # Enable RDP + Firewall
+    # Enable RDP
     # ------------------------------------------------------------
     - name: Enable RDP
       run: |
         Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' fDenyTSConnections 0
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' UserAuthentication 0
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' SecurityLayer 0
         netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
         Restart-Service TermService -Force
 
@@ -77,10 +77,8 @@ jobs:
           Add-LocalGroupMember "Remote Desktop Users" NOBIXRDP
         }
 
-        echo "RDP_USER=NOBIXRDP" >> $env:GITHUB_ENV
-
     # ------------------------------------------------------------
-    # Install + Connect Tailscale
+    # Install & Connect Tailscale
     # ------------------------------------------------------------
     - name: Tailscale
       run: |
@@ -89,6 +87,7 @@ jobs:
         Invoke-WebRequest $u -OutFile $p
         Start-Process msiexec "/i `"$p`" /quiet" -Wait
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
+
         $ip=""
         while (-not $ip) {
           $ip=& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
@@ -97,51 +96,51 @@ jobs:
         echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
 
     # ------------------------------------------------------------
-    # Telegram Alert: NEW RDP
+    # Telegram: NEW / REPLACED RDP
     # ------------------------------------------------------------
     - name: Telegram New RDP
       run: |
         $bot="${{ secrets.TG_BOT_TOKEN }}"
         $chat="${{ secrets.TG_CHAT_ID }}"
-        $msg="🟢 **NEW RDP READY**%0A%0A🔢 $env:RDP_SLOT%0A🖥 IP: $env:TAILSCALE_IP%0A👤 User: ./NOBIXRDP%0A🔐 Pass: FIXED%0A⏳"
+
+        if ($env:REPLACED) {
+          $msg="🟢 **NEW RDP READY**%0A🔁 Replaced: **$env:REPLACED**%0A🔢 Slot: **$env:RDP_SLOT**%0A🖥 IP: $env:TAILSCALE_IP%0A👤 Login: localhost\NOBIXRDP%0A🔐 Password: FIXED"
+        } else {
+          $msg="🟢 **NEW RDP READY**%0A🔢 Slot: **$env:RDP_SLOT**%0A🖥 IP: $env:TAILSCALE_IP%0A👤 Login: localhost\NOBIXRDP%0A🔐 Password: FIXED"
+        }
+
         Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=$msg"
 
     # ------------------------------------------------------------
-    # RDP Lifetime + Expiry Alert + Auto Renew
+    # Lifetime → Warning → Immediate Replacement Trigger
     # ------------------------------------------------------------
-    - name: RDP Lifetime & Auto-Renew
+    - name: Lifetime & Auto Replace
       shell: pwsh
       run: |
         $bot="${{ secrets.TG_BOT_TOKEN }}"
         $chat="${{ secrets.TG_CHAT_ID }}"
-        $repo="${{ github.repository }}"
-        $wf="NOBIXRDP.yml"
-        $token="${{ secrets.GH_TRIGGER_TOKEN }}"
 
-        # Wait 5h45m
+        # 5h45m
         Start-Sleep 20700
 
-        # 15 min warning
-        Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=⏰ WARNING%0A$env:RDP_SLOT will expire in 15 minutes"
+        Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=⏰ **WARNING**%0A$env:RDP_SLOT will be replaced in 15 minutes"
 
-        # Wait final 15 min
-        Start-Sleep 900
-
-        # Expired alert
-        Invoke-RestMethod "https://api.telegram.org/bot$bot/sendMessage?chat_id=$chat&text=🔴 RDP EXPIRED%0A$env:RDP_SLOT is now offline"
-
-        # ------------------------------------------------------
-        # Auto-Renew: Trigger new workflow_dispatch
-        # ------------------------------------------------------
-        $body = @{ 
-          ref = "${{ github.ref }}" 
-        } | ConvertTo-Json
+        # Trigger replacement NOW
+        $body = @{
+          ref = "${{ github.ref }}"
+          inputs = @{
+            replace_slot = "$env:RDP_SLOT"
+          }
+        } | ConvertTo-Json -Depth 5
 
         Invoke-RestMethod `
           -Method POST `
-          -Uri "https://api.github.com/repos/$repo/actions/workflows/$wf/dispatches" `
+          -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/NOBIXRDP.yml/dispatches" `
           -Headers @{
-            Authorization = "Bearer $token"
+            Authorization = "Bearer ${{ secrets.GH_TRIGGER_TOKEN }}"
             Accept = "application/vnd.github+json"
           } `
           -Body $body
+
+        # Final 15 min
+        Start-Sleep 900
